@@ -5,7 +5,9 @@ A [Chime][chime] extension for Go.
 
 ## Overview
 
-This Chime extension supports the [Go][go] programming language. It integrates gopls with [ChimeKit][chimekit]'s `ExtensionProtocol`.
+This Chime extension supports the [Go][go] programming language. It integrates [gopls][gopls] with [ChimeKit][chimekit]'s `ExtensionProtocol`.
+
+Currently, chime-go depends on a pre-built version of gopls being available inside the containing `.appex` bundle. This is a limitation that will eventually be removed.
 
 ## Installation
 
@@ -21,4 +23,5 @@ Please note that this project is released with a [Contributor Code of Conduct](C
 [license badge]: https://img.shields.io/github/license/ChimeHQ/chime-go
 [chime]: https://www.chimehq.com
 [go]: https://go.dev
+[gopls]: https://pkg.go.dev/golang.org/x/tools/gopls
 [chimekit]: https://github.com/ChimeHQ/ChimeKit
