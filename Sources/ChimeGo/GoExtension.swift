@@ -10,22 +10,22 @@ public final class GoExtension {
     private let lspService: LSPService
     private let log: OSLog
 
-    init(host: any HostProtocol, processHostService: String?) {
+    init(host: any HostProtocol, processHostServiceName: String) {
         self.host = host
-        let log = OSLog(subsystem: "com.chimehq.Edit.Go", category: "Extension")
+        let log = OSLog(subsystem: "com.chimehq.Edit.Go", category: "GoExtension")
 
         self.log = log
 
         let transformers = LSPTransformers(hoverTransformer: Gopls.hoverTransformer)
 		let filter = LSPService.contextFilter(for: [.goSource, .goModFile, .goWorkFile])
-		let paramProvider = { try await GoExtension.provideParams(log: log, processHostService: processHostService) }
+		let paramProvider = { try await GoExtension.provideParams(log: log, processHostServiceName: processHostServiceName) }
 
         self.lspService = LSPService(host: host,
                                      serverOptions: Gopls.serverOptions,
                                      transformers: transformers,
                                      contextFilter: filter,
 									 executionParamsProvider: paramProvider,
-									 processHostServiceName: processHostService)
+									 processHostServiceName: processHostServiceName)
     }
 }
 
@@ -63,14 +63,27 @@ extension GoExtension {
     static let envKeys = Set(["GOPATH", "GOROOT", "GOBIN", "GOEXE", "GOTOOLDIR",
 							 "PATH", "SHLVL", "TERM_PROGRAM", "PWD", "TERM_PROGRAM_VERSION", "SHELL", "TERM"])
 
-	private static func provideParams(log: OSLog, processHostService: String?) async throws -> Process.ExecutionParameters {
-		let url = Bundle.main.url(forAuxiliaryExecutable: "gopls")
+	static let bundle: Bundle? = {
+		// Determine if we are executing within the main application or an extension
+		let mainBundle = Bundle.main
+
+		if mainBundle.bundleURL.pathExtension == "appex" {
+			return mainBundle
+		}
+
+		let bundleURL = mainBundle.bundleURL.appendingPathComponent("Contents/Extensions/GoExtension.appex", isDirectory: true)
+
+		return Bundle(url: bundleURL)
+	}()
+
+	private static func provideParams(log: OSLog, processHostServiceName: String) async throws -> Process.ExecutionParameters {
+		let url = GoExtension.bundle?.url(forAuxiliaryExecutable: "gopls")
 
         guard let path = url?.path else {
 			throw LSPServiceError.serverNotFound
         }
 
-        let env = try await GoExtension.computeGoEnvironment(processHostService: processHostService)
+        let env = try await GoExtension.computeGoEnvironment(processHostServiceName: processHostServiceName)
 
 		let printableEnv = env.filter({ envKeys.contains($0.key) })
 
@@ -83,17 +96,9 @@ extension GoExtension {
 }
 
 extension GoExtension {
-	static func userEnvrionment(processHostService: String?) async throws -> [String: String] {
-		if let name = processHostService {
-			return try await HostedProcess.userEnvironment(with: name)
-		}
-
-		return ProcessInfo.processInfo.userEnvironment
-	}
-
-    static func computeGoEnvironment(processHostService: String?) async throws -> [String: String] {
-		let userEnv = try await userEnvrionment(processHostService: processHostService)
-		let env = try await captureGoEnvironment(environment: userEnv, processHostService: processHostService)
+    static func computeGoEnvironment(processHostServiceName: String) async throws -> [String: String] {
+		let userEnv = try await HostedProcess.userEnvironment(with: processHostServiceName)
+		let env = try await captureGoEnvironment(environment: userEnv, processHostServiceName: processHostServiceName)
         let effectiveEnv = effectiveGoUserEnvironment(userEnv: userEnv, goEnv: env)
 
         return effectiveEnv
@@ -107,22 +112,12 @@ extension GoExtension {
         return userEnv.merging(["GOROOT": goRoot], uniquingKeysWith: { (a, _) in return a })
     }
 
-    private static func captureGoEnvironment(environment: [String : String], processHostService: String?) async throws -> [String : String] {
+    private static func captureGoEnvironment(environment: [String : String], processHostServiceName: String) async throws -> [String : String] {
         let path = "/usr/bin/env"
         let args = ["go", "env", "-json"]
         let params = Process.ExecutionParameters(path: path, arguments: args, environment: environment)
 
-		let data: Data
-
-		if let name = processHostService {
-			let process = HostedProcess(named: name, parameters: params)
-
-			data = try await process.runAndReadStdout()
-		} else {
-			let process = Process(parameters: params)
-
-			data = try process.runAndReadStdout() ?? Data()
-		}
+		let data = try await HostedProcess(named: processHostServiceName, parameters: params).runAndReadStdout()
 
         guard let dict = try? JSONSerialization.jsonObject(with: data, options: []) else {
             return [:]
