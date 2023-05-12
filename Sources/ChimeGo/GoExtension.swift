@@ -17,19 +17,23 @@ public final class GoExtension {
         self.log = log
 
         let transformers = LSPTransformers(hoverTransformer: Gopls.hoverTransformer)
-		let filter = LSPService.contextFilter(for: [.goSource, .goModFile, .goWorkFile])
 		let paramProvider = { try await GoExtension.provideParams(log: log, processHostServiceName: processHostServiceName) }
 
         self.lspService = LSPService(host: host,
                                      serverOptions: Gopls.serverOptions,
                                      transformers: transformers,
-                                     contextFilter: filter,
 									 executionParamsProvider: paramProvider,
 									 processHostServiceName: processHostServiceName)
     }
 }
 
 extension GoExtension: ExtensionProtocol {
+	public var configuration: ExtensionConfiguration {
+		get async throws {
+			return ExtensionConfiguration(contentFilter: [.uti(.goSource), .uti(.goModFile), .uti(.goWorkFile)])
+		}
+	}
+
     public func didOpenProject(with context: ProjectContext) async throws {
         try await lspService.didOpenProject(with: context)
     }
