@@ -1,66 +1,39 @@
 import Foundation
-import os.log
+import OSLog
 
 import ChimeKit
 import LanguageServerProtocol
-import ProcessServiceClient
 
+@MainActor
 public final class GoExtension {
     private let host: any HostProtocol
     private let lspService: LSPService
-    private let log: OSLog
+    private let logger = Logger(subsystem: "com.chimehq.Edit.Go", category: "GoExtension")
 
-    init(host: any HostProtocol, processHostServiceName: String) {
+    init(host: any HostProtocol) {
         self.host = host
-        let log = OSLog(subsystem: "com.chimehq.Edit.Go", category: "GoExtension")
-
-        self.log = log
 
         let transformers = LSPTransformers(hoverTransformer: Gopls.hoverTransformer)
-		let paramProvider = { try await GoExtension.provideParams(log: log, processHostServiceName: processHostServiceName) }
+		let paramProvider = { [logger] in try await GoExtension.provideParams(logger: logger, host: host) }
 
         self.lspService = LSPService(host: host,
                                      serverOptions: Gopls.serverOptions,
                                      transformers: transformers,
-									 executionParamsProvider: paramProvider,
-									 processHostServiceName: processHostServiceName)
+									 executionParamsProvider: paramProvider)
     }
 }
 
 extension GoExtension: ExtensionProtocol {
 	public var configuration: ExtensionConfiguration {
-		get async throws {
-			return ExtensionConfiguration(contentFilter: [.uti(.goSource), .uti(.goModFile), .uti(.goWorkFile)])
-		}
+		return ExtensionConfiguration(
+			contentFilter: [.uti(.goSource), .uti(.goModFile), .uti(.goWorkFile)],
+			serviceConfiguration: ServiceConfiguration(completionTriggers: ["."])
+		)
 	}
 
-    public func didOpenProject(with context: ProjectContext) async throws {
-        try await lspService.didOpenProject(with: context)
-    }
-
-    public func willCloseProject(with context: ProjectContext) async throws {
-        try await lspService.willCloseProject(with: context)
-    }
-
-    public func symbolService(for context: ProjectContext) async throws -> SymbolQueryService? {
-        return try await lspService.symbolService(for: context)
-    }
-
-    public func didOpenDocument(with context: DocumentContext) async throws -> URL? {
-        return try await lspService.didOpenDocument(with: context)
-    }
-
-    public func didChangeDocumentContext(from oldContext: DocumentContext, to newContext: DocumentContext) async throws {
-        return try await lspService.didChangeDocumentContext(from: oldContext, to: newContext)
-    }
-
-    public func willCloseDocument(with context: DocumentContext) async throws {
-        return try await lspService.willCloseDocument(with: context)
-    }
-
-    public func documentService(for context: DocumentContext) async throws -> DocumentService? {
-        return try await lspService.documentService(for: context)
-    }
+	public var applicationService: ApplicationService {
+		return lspService
+	}
 }
 
 extension GoExtension {
@@ -80,29 +53,29 @@ extension GoExtension {
 		return Bundle(url: bundleURL)
 	}()
 
-	private static func provideParams(log: OSLog, processHostServiceName: String) async throws -> Process.ExecutionParameters {
+	private static func provideParams(logger: Logger, host: HostProtocol) async throws -> Process.ExecutionParameters {
 		let url = GoExtension.bundle?.url(forAuxiliaryExecutable: "gopls")
 
         guard let path = url?.path else {
 			throw LSPServiceError.serverNotFound
         }
 
-        let env = try await GoExtension.computeGoEnvironment(processHostServiceName: processHostServiceName)
+        let env = try await GoExtension.computeGoEnvironment(host: host)
 
 		let printableEnv = env.filter({ envKeys.contains($0.key) })
 
-        os_log("Go environment: %{public}@", log: log, type: .info, printableEnv)
+		logger.info("Go environment: \(printableEnv, privacy: .public)")
 
         return Process.ExecutionParameters(path: path,
-                                           arguments: [],
+                                           arguments: ["-logfile=/tmp/gopls.txt"],
                                            environment: env)
     }
 }
 
 extension GoExtension {
-    static func computeGoEnvironment(processHostServiceName: String) async throws -> [String: String] {
-		let userEnv = try await HostedProcess.userEnvironment(with: processHostServiceName)
-		let env = try await captureGoEnvironment(environment: userEnv, processHostServiceName: processHostServiceName)
+    static func computeGoEnvironment(host: HostProtocol) async throws -> [String: String] {
+		let userEnv = try await host.captureUserEnvironment()
+		let env = try await captureGoEnvironment(environment: userEnv, host: host)
         let effectiveEnv = effectiveGoUserEnvironment(userEnv: userEnv, goEnv: env)
 
         return effectiveEnv
@@ -116,12 +89,12 @@ extension GoExtension {
         return userEnv.merging(["GOROOT": goRoot], uniquingKeysWith: { (a, _) in return a })
     }
 
-    private static func captureGoEnvironment(environment: [String : String], processHostServiceName: String) async throws -> [String : String] {
+    private static func captureGoEnvironment(environment: [String : String], host: HostProtocol) async throws -> [String : String] {
         let path = "/usr/bin/env"
         let args = ["go", "env", "-json"]
         let params = Process.ExecutionParameters(path: path, arguments: args, environment: environment)
 
-		let data = try await HostedProcess(named: processHostServiceName, parameters: params).runAndReadStdout()
+		let data = try await host.launchProcess(with: params).readStdout()
 
         guard let dict = try? JSONSerialization.jsonObject(with: data, options: []) else {
             return [:]
@@ -151,7 +124,7 @@ extension GoExtension {
             let containsModFile = contents?.contains(where: { $0.lastPathComponent == "go.mod" }) ?? false
 
             if containsModFile {
-                os_log("found mod file at %{public}@", log: log, type: .info, parentURL.absoluteString)
+				logger.info("found mod file: \(parentURL.absoluteString, privacy: .public)")
                 return parentURL
             }
         }
@@ -159,20 +132,8 @@ extension GoExtension {
         // fail, just return the parent directory
         let fallbackPath = url.deletingLastPathComponent()
 
-        os_log("falling back to parent directory %{public}@", log: log, type: .info, fallbackPath.absoluteString)
+		logger.info("falling back to parent directory: \(fallbackPath.absoluteString, privacy: .public)")
 
         return fallbackPath
     }
-
-	private static func projectRoot(at url: URL) -> Bool {
-		let contents = (try? FileManager.default.contentsOfDirectory(atPath: url.absoluteURL.path)) ?? []
-
-		if contents.contains(where: { $0 == "go.mod" || $0.hasSuffix(".go") }) {
-			return true
-		}
-
-		// this also needs to check to see if we are within the GOPATH
-		
-		return false
-	}
 }
