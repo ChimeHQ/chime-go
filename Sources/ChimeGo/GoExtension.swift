@@ -31,7 +31,7 @@ extension GoExtension: ExtensionProtocol {
 		)
 	}
 
-	public var applicationService: ApplicationService {
+	public var applicationService: some ApplicationService {
 		return lspService
 	}
 }
