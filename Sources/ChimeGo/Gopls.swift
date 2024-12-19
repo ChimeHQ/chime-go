@@ -1,6 +1,7 @@
 import Foundation
 
 import ChimeKit
+import LanguageServerProtocol
 import ProcessEnv
 
 struct Gopls {
@@ -63,7 +64,7 @@ extension Gopls {
 		static let empty = StructuredHover(signature: "", singleLine: "", synopsis: "", fullDocumentation: "", link: nil, SymbolName: nil)
 	}
 
-	static let hoverTransformer: HoverTransformer = { position, response in
+	static func hoverTransformer(position: CombinedTextPosition, response: HoverResponse) -> SemanticDetails? {
 		guard
 			let response = response,
 			let hoverValue = response.value,
